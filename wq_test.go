@@ -18,6 +18,7 @@ func TestQueue(t *testing.T) {
 	q.Run(func(*int) { time.Sleep(time.Nanosecond) })
 
 	for i := 0; i < workSize; i++ {
+		i := i
 		q.EnQ(&i)
 	}
 	q.Close()
@@ -49,8 +50,14 @@ func BenchmarkQueue(b *testing.B) {
 	// simulate some work so scheduler doesn't get stuck at all (not needed in an actual scenario)
 	q.Run(func(*int) { time.Sleep(time.Nanosecond) })
 
+	vals := make([]int, 0, b.N)
 	for i := 0; i < b.N; i++ {
-		q.EnQ(&i)
+		vals = append(vals, i)
+	}
+
+	b.ResetTimer()
+	for i := range vals {
+		q.EnQ(&vals[i])
 	}
 }
 
@@ -64,12 +71,18 @@ func BenchmarkChans(b *testing.B) {
 		}
 	}
 
+	vals := make([]int, 0, b.N)
+	for i := 0; i < b.N; i++ {
+		vals = append(vals, i)
+	}
+
 	for i := 0; i < workerCount; i++ {
 		go w()
 	}
 
-	for i := 0; i < b.N; i++ {
-		c <- i
+	b.ResetTimer()
+	for i := range vals {
+		c <- vals[i]
 	}
 }
 
