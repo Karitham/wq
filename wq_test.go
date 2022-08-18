@@ -3,20 +3,10 @@ package wq
 import (
 	"fmt"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 )
-
-func TestQueue(t *testing.T) {
-	workSize := 10000000
-
-	q := New(func(*int) { time.Sleep(time.Nanosecond) })
-
-	for i := 0; i < workSize; i++ {
-		i := i
-		q.EnQ(&i)
-	}
-}
 
 func TestDrain(t *testing.T) {
 	workSize := 100
@@ -27,6 +17,7 @@ func TestDrain(t *testing.T) {
 		q.EnQ(&i)
 		q.Drain()
 	}
+	q.Wait()
 }
 
 func BenchmarkQueue(b *testing.B) {
@@ -41,6 +32,7 @@ func BenchmarkQueue(b *testing.B) {
 	for i := range vals {
 		q.EnQ(&vals[i])
 	}
+	q.Wait()
 }
 
 func BenchmarkChans(b *testing.B) {
@@ -68,10 +60,17 @@ func BenchmarkChans(b *testing.B) {
 }
 
 func TestV(t *testing.T) {
-	q := New(func(v *int) { fmt.Println(*v) })
+	const n = 150
+	c := uint32(0)
+	q := New(func(v *int) { atomic.AddUint32(&c, 1); fmt.Println(*v) })
 
-	for i := 0; i < 100000; i++ {
+	for i := 0; i < n; i++ {
 		i := i
 		q.EnQ(&i)
+	}
+	q.Wait()
+
+	if c != n {
+		t.Errorf("expected %d, got %d", n, c)
 	}
 }

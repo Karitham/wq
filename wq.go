@@ -7,9 +7,10 @@ import (
 
 // WQueue is a queue of work to be done (with associated workers).
 type WQueue[T any] struct {
+	q      []atomic.Pointer[T]
 	closed atomic.Bool
 	i      atomic.Uint32
-	q      []atomic.Pointer[T]
+	doneWs atomic.Uint32
 }
 
 type Option struct {
@@ -56,15 +57,13 @@ func WithNoStart() func(*Option) {
 // EnQ adds a work item to the queue.
 func (wq *WQueue[T]) EnQ(item *T) {
 	for !wq.Closed() {
-		i := wq.i.Load() % uint32(len(wq.q))
+		i := wq.i.Add(1) % uint32(len(wq.q))
 		if wq.q[i].CompareAndSwap(nil, item) {
 			return
 		}
-
-		if !wq.i.CompareAndSwap(i, i+1) {
-			wq.i.Store(0)
-		}
 	}
+
+	panic("enqueue on closed queue")
 }
 
 // deQ removes and returns a work item from the queue.
@@ -86,7 +85,7 @@ func (wq *WQueue[T]) deQ(i int) (t *T, valid bool) {
 		return nil, !wq.Closed()
 	}
 
-	return item, !wq.Closed()
+	return wq.q[i].Swap(nil), !wq.Closed()
 }
 
 // Close closes the queue.
@@ -114,11 +113,23 @@ func (wq *WQueue[T]) Drain() []T {
 
 // Run starts workers and executes the given work function for each item in the queue.
 func (wq *WQueue[T]) Run(fn func(*T)) {
-	for i := 0; i < len(wq.q); i++ {
+	for i := range wq.q {
 		go func(i int) {
-			for v, ok := wq.deQ(i); ok; v, ok = wq.deQ(i) {
+			defer wq.doneWs.Add(1)
+			for v, ok := wq.deQ(i); ; v, ok = wq.deQ(i) {
+				if v == nil && !ok {
+					return
+				}
+
 				fn(v)
 			}
 		}(i)
+	}
+}
+
+// Wait waits for all workers to finish.
+func (wq *WQueue[T]) Wait() {
+	wq.Close()
+	for wq.doneWs.Load() != uint32(len(wq.q)) {
 	}
 }
