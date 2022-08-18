@@ -8,28 +8,67 @@ import (
 // WQueue is a queue of work to be done (with associated workers).
 type WQueue[T any] struct {
 	closed atomic.Bool
+	i      atomic.Uint32
 	q      []atomic.Pointer[T]
 }
 
+type Option struct {
+	// The number of workers to start.
+	wCount int
+
+	// Do not start any workers.
+	noStart bool
+}
+
 // New returns a new WorkQueue of the given worker count.
-func New[T any](workerCount int) *WQueue[T] {
-	return &WQueue[T]{
+func New[T any](w func(*T), opts ...func(*Option)) *WQueue[T] {
+	o := &Option{wCount: runtime.NumCPU(), noStart: false}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	wq := &WQueue[T]{
 		closed: atomic.Bool{},
-		q:      make([]atomic.Pointer[T], workerCount),
+		i:      atomic.Uint32{},
+		q:      make([]atomic.Pointer[T], o.wCount),
+	}
+
+	if !o.noStart {
+		wq.Run(w)
+	}
+	return wq
+}
+
+// WithWorkerCount sets the number of workers to start.
+func WithWorkerCount(wCount int) func(*Option) {
+	return func(o *Option) {
+		o.wCount = wCount
+	}
+}
+
+// WithNoStart disables starting any workers.
+func WithNoStart() func(*Option) {
+	return func(o *Option) {
+		o.noStart = true
 	}
 }
 
 // EnQ adds a work item to the queue.
 func (wq *WQueue[T]) EnQ(item *T) {
-	for i := 0; !wq.Closed(); i = (i + 1) % len(wq.q) {
+	for !wq.Closed() {
+		i := wq.i.Load() % uint32(len(wq.q))
 		if wq.q[i].CompareAndSwap(nil, item) {
 			return
+		}
+
+		if !wq.i.CompareAndSwap(i, i+1) {
+			wq.i.Store(0)
 		}
 	}
 }
 
-// DeQ removes and returns a work item from the queue.
-func (wq *WQueue[T]) DeQ(i int) (t *T, valid bool) {
+// deQ removes and returns a work item from the queue.
+func (wq *WQueue[T]) deQ(i int) (t *T, valid bool) {
 	for !wq.Closed() {
 		item := wq.q[i].Load()
 		if item == nil {
@@ -77,7 +116,7 @@ func (wq *WQueue[T]) Drain() []T {
 func (wq *WQueue[T]) Run(fn func(*T)) {
 	for i := 0; i < len(wq.q); i++ {
 		go func(i int) {
-			for v, ok := wq.DeQ(i); ok; v, ok = wq.DeQ(i) {
+			for v, ok := wq.deQ(i); ok; v, ok = wq.deQ(i) {
 				fn(v)
 			}
 		}(i)
